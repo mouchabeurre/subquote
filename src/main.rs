@@ -17,14 +17,13 @@ fn main() {
       ParseOutcome::Help => process::exit(1)
     }
   });
-  //println!("Parsed args: {:?}", parsed_args);
   let safe_arguments = unsafe_arguments.validate().unwrap_or_else(|err| {
     println!("Error during input validation: [{}].", err);
     process::exit(1);
   });
 
   let quote = builder::get_quote(safe_arguments).unwrap_or_else(|err| {
-    println!("Error during input validation: [{}].", err);
+    println!("Error during quote generation: [{}].", err);
     process::exit(1);
   });
   println!("{}", quote);

@@ -63,6 +63,7 @@ pub mod io {
     pub verbosity: bool,
     pub unit: Unit,
     pub cache_directory: String,
+    pub no_cache: bool
   }
 
   impl SafeArguments {
@@ -71,15 +72,32 @@ pub mod io {
       quote_length: i32,
       verbosity: bool,
       cache_directory: String,
-      unit: Unit
+      unit: Unit,
+      no_cache: bool
     ) -> Self {
       Self {
         subtitle,
         quote_length,
         verbosity,
         cache_directory,
-        unit
+        unit,
+        no_cache
       }
+    }
+  }
+
+  impl Debug for SafeArguments {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+      write!(
+        f,
+        "UnsafeArguments {{ subtitle: {}, quote_length: {}, verbosity: {}, cache_directory: {}, unit: {}, no_cache: {} }}",
+        self.subtitle,
+        self.quote_length,
+        self.verbosity,
+        self.cache_directory,
+        self.unit,
+        self.no_cache
+      )
     }
   }
 
@@ -89,21 +107,9 @@ pub mod io {
     verbosity: ArgProvided<bool>,
     unit: ArgProvided<Unit>,
     cache_directory: ArgProvided<String>,
+    no_cache: ArgProvided<bool>
   }
 
-  impl Debug for UnsafeArguments {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-      write!(
-        f,
-        "UnsafeArguments {{ subtitle: {}, quote_length: {}, verbosity: {}, cache_directory: {}, unit: {} }}",
-        self.subtitle,
-        self.quote_length,
-        self.verbosity,
-        self.cache_directory,
-        self.unit
-      )
-    }
-  }
 
   impl UnsafeArguments {
     fn new(
@@ -111,14 +117,16 @@ pub mod io {
       quote_length: ArgProvided<i32>,
       verbosity: ArgProvided<bool>,
       cache_directory: ArgProvided<String>,
-      unit: ArgProvided<Unit>
+      unit: ArgProvided<Unit>,
+      no_cache: ArgProvided<bool>,
     ) -> Self {
       Self {
         subtitle,
         quote_length,
         verbosity,
         cache_directory,
-        unit
+        unit,
+        no_cache
       }
     }
     fn get_default_quote_length(unit: Option<Unit>) -> i32 {
@@ -140,14 +148,25 @@ pub mod io {
       }
     }
     fn get_default_verbosity() -> bool { false }
+    fn get_default_no_cache() -> bool { false }
     fn get_default_unit() -> Unit { Unit::Word }
     fn get_default_cache_directory() -> Option<String> {
+      let sub_dir = "subquote";
+      let default_cache = ".cache";
       match env::var_os("XDG_CACHE_HOME") {
         Some(p_os_str) => match p_os_str.into_string() {
-          Ok(p_str) => return Some(format!("{}/subquote", p_str)),
+          Ok(p_str) => return Some(format!("{}/{}", p_str, sub_dir)),
           Err(_) => return None
         },
-        None => return None
+        None => {
+          match env::var_os("HOME") {
+            Some(p_os_str) => match p_os_str.into_string() {
+              Ok(p_str) => return Some(format!("{}/{}/{}", p_str, default_cache, sub_dir)),
+              Err(_) => return None
+            },
+            None => return None
+          }
+        }
       };
     }
     pub fn validate(&self) -> Result<SafeArguments, String> {
@@ -157,27 +176,37 @@ pub mod io {
           "quote length must be greater or equal to 1 (got \"{}\")", &self.quote_length)
         )
       }
-      if !path::Path::new(&self.cache_directory.get_value()).is_dir() {
-        match &self.cache_directory {
-          ArgProvided::Yes(_) => {
-            errors.push(format!(
-              "couldn't read specified cache directory (got \"{}\")", &self.cache_directory)
-            )
-          },
-          ArgProvided::No(dir) => {
-            match fs::create_dir(path::Path::new(&dir)) {
-              Ok(_) => {
-                if *self.verbosity.get_value() {
-                  println!("Created default cache directory at {}", &dir);
-                }
-              },
-              Err(_) => errors.push(
-                format!("couldn't create cache directory (got \"{}\")", &self.cache_directory)
+      let (no_cache_provided, no_cache_value) = match &self.no_cache {
+        ArgProvided::Yes(no_c) => (true, *no_c),
+        ArgProvided::No(no_c) => (false, *no_c),
+      };
+      if no_cache_provided && no_cache_value {
+        if let ArgProvided::Yes(_) = &self.cache_directory {
+          errors.push(String::from("options \"cache\" and \"no-cache\" cannot be used mutually"));
+        }
+      } else {
+        if !path::Path::new(&self.cache_directory.get_value()).is_dir() {
+          match &self.cache_directory {
+            ArgProvided::Yes(_) => {
+              errors.push(format!(
+                "couldn't read specified cache directory (got \"{}\")", &self.cache_directory)
               )
+            },
+            ArgProvided::No(dir) => {
+              match fs::create_dir(path::Path::new(&dir)) {
+                Ok(_) => {
+                  if *self.verbosity.get_value() {
+                    println!("Created default cache directory at {}", &dir);
+                  }
+                },
+                Err(_) => errors.push(
+                  format!("couldn't create cache directory (got \"{}\")", &self.cache_directory)
+                )
+              }
             }
           }
-        }
-      } 
+        } 
+      }
       if !path::Path::new(&self.subtitle).is_file() {
         errors.push(format!("specified subtitle is not a file (got \"{}\")", &self.subtitle))
       }
@@ -189,7 +218,8 @@ pub mod io {
         self.quote_length.get_value().clone(),
         self.verbosity.get_value().clone(),
         self.cache_directory.get_value().clone(),
-        (*self.unit.get_value()).clone()
+        (*self.unit.get_value()).clone(),
+        self.no_cache.get_value().clone()
       ))
     }
   }
@@ -205,9 +235,11 @@ pub mod io {
     let def_verbosity = UnsafeArguments::get_default_verbosity();
     let def_unit = UnsafeArguments::get_default_unit();
     let def_cache_directory = UnsafeArguments::get_default_cache_directory();
+    let def_no_cache = UnsafeArguments::get_default_no_cache();
 
     let desc_quote_length = format!("Maximum quote length (default: {})", def_quote_length);
     let desc_verbosity = format!("Be verbose (default: {})", def_verbosity);
+    let desc_no_cache = format!("Prevent cache usage (default: {})", def_no_cache);
     let desc_unit = format!("Unit used to build the quote: \"word\" or \"char\" (default: {})", def_unit);
     let desc_help = String::from("Print this help menu");
     let desc_cache_base = String::from("Specify where to save processed subtitles");
@@ -219,15 +251,17 @@ pub mod io {
     };
 
     let mut opts = Options::new();
-    let opt_l = ("l", "length", &desc_quote_length);
-    let opt_u = ("u", "unit", &desc_unit);
-    let opt_c = ("", "cache", &desc_cache_directory);
+    let opt_l = ("l", "length", &desc_quote_length, &def_quote_length.to_string());
+    let opt_u = ("u", "unit", &desc_unit, "word|char");
+    let opt_c = ("", "cache", &desc_cache_directory, "~/path/to/cache");
+    let opt_n = ("", "no-cache", &desc_no_cache);
     let opt_v = ("v", "", &desc_verbosity);
     let opt_h = ("h", "help", &desc_help);
-    opts.optopt(opt_l.0, opt_l.1, opt_l.2, "");
-    opts.optopt(opt_u.0, opt_u.1, opt_u.2, "");
-    opts.optopt(opt_c.0, opt_c.1, opt_c.2, "");
+    opts.optopt(opt_l.0, opt_l.1, opt_l.2, opt_l.3);
+    opts.optopt(opt_u.0, opt_u.1, opt_u.2, opt_u.3);
+    opts.optopt(opt_c.0, opt_c.1, opt_c.2, opt_c.3);
     opts.optflag(opt_v.0, opt_v.1, opt_v.2);
+    opts.optflag(opt_n.0, opt_n.1, opt_n.2);
     opts.optflag(opt_h.0, opt_h.1, opt_h.2);
     let matches = match opts.parse(&args[1..]) {
         Ok(opt) => opt,
@@ -242,8 +276,12 @@ pub mod io {
     }
 
     let verbosity = match matches.opt_present(opt_v.0) {
-      true => ArgProvided::Yes(true),
+      true => ArgProvided::Yes(!def_verbosity),
       false => ArgProvided::No(def_verbosity)
+    };
+    let no_cache = match matches.opt_present(opt_n.1) {
+      true => ArgProvided::Yes(!def_no_cache),
+      false => ArgProvided::No(def_no_cache)
     };
     let unit = match matches.opt_str(opt_u.0) {
       Some(unit) => {
@@ -275,23 +313,28 @@ pub mod io {
       Some(dir) => ArgProvided::Yes(dir),
       None => match def_cache_directory {
         Some(dir) => ArgProvided::No(dir),
-        None => return Err(ParseOutcome::Error(
-          format!(
-            "couldn't determine user's default cache directory (provide it with --{} /path/to/cache)",
-            opt_c.1
-          )
-        ))
+        None => {
+          if !*no_cache.get_value() {
+            return Err(ParseOutcome::Error(
+              format!(
+                "couldn't determine user's default cache directory (provide it with --{} /path/to/cache)",
+                opt_c.1
+              )
+            ))
+          }
+          ArgProvided::No(String::new())
+        }
       }
     };
     let subtitle = if !matches.free.is_empty() {
-        matches.free[0].clone()
+      matches.free[0].clone()
     } else {
       return Err(ParseOutcome::Error(
         String::from("subtitle file is requiered"))
       )
     };
 
-    Ok(UnsafeArguments::new(subtitle, quote_length, verbosity, cache_directory, unit))
+    Ok(UnsafeArguments::new(subtitle, quote_length, verbosity, cache_directory, unit, no_cache))
   }
 }
 
@@ -341,10 +384,10 @@ pub mod builder {
   }
 
   impl Quote {
-    fn build(&self) -> Option<Vec<String>> {
+    fn to_vec(&self) -> Option<Vec<String>> {
       match self {
         Node(unit, next) => {
-          match next.build() {
+          match next.to_vec() {
             Some(mut remaining) => {
               let mut current = vec![unit.clone()];
               current.append(remaining.as_mut());
@@ -372,7 +415,7 @@ pub mod builder {
       Unit::Word => cached_dict.set_extension("word"),
       Unit::Grapheme => cached_dict.set_extension("char"),
     };
-    if cached_dict.is_file() {
+    if !args.no_cache && cached_dict.is_file() {
       let dict = match load_dict(cached_dict) {
         Ok(de_dict) => de_dict,
         Err(err) => return Err(err)
@@ -384,15 +427,20 @@ pub mod builder {
     } else {
       let mut dict: HashMap<String, Vec<String>> = HashMap::new();
       match fs::read_to_string(&args.subtitle) {
-        Err(_) => return Err(String::from("couldn't open subtitle file")),
+        Err(err) => {
+          return Err(format!("couldn't open subtitle file: {}", err))
+        },
         Ok(subtitle) => {
           let subrip_reg = Regex::new(r"(^\d{2}:\d{2}:\d{2},\d{3}\s-->\s\d{2}:\d{2}:\d{2},\d{3}$)|(^\d+$)|(^()$)")
             .unwrap();
-          let quotes_reg = Regex::new(r#""\s?|<.*>\s?|,|-"#)
+          let noise_reg = Regex::new(r#""\s?|<.*>\s?|\[.*\]|\(.*\)|^-?\s?[a-zA-Z]+:\s?"#)
+            .unwrap();
+          let punct_reg = Regex::new(r",|-|\.|;|\?|!")
             .unwrap();
           for line in subtitle.lines() {
             if !subrip_reg.is_match(line) {
-              let replaced = quotes_reg.replace_all(line, "");
+              let replaced_noise = noise_reg.replace_all(line, "");
+              let replaced = punct_reg.replace_all(replaced_noise.as_ref(), "");
               let units = match args.unit {
                 Unit::Word => replaced.split_whitespace(),
                 Unit::Grapheme => replaced.split_whitespace()
@@ -412,10 +460,8 @@ pub mod builder {
                     entry.push(peeked)
                   },
                   None => {
-                    if !next.ends_with(".") {
-                      match dict.insert(next, vec![peeked]) {
-                        _ => ()
-                      }
+                    match dict.insert(next, vec![peeked]) {
+                      _ => ()
                     }
                   }
                 }
@@ -424,14 +470,21 @@ pub mod builder {
           }
         }
       }
-      match save_dict(dict.clone(), &cached_dict) {
-        Ok(_) => {
-          match generate_quote(&dict, args.quote_length) {
-            Ok(quote) => Ok(quote),
-            Err(err) => Err(err)
-          }
-        },
-        Err(err) => Err(err)
+      if args.no_cache {
+        match generate_quote(&dict, args.quote_length) {
+          Ok(quote) => Ok(quote),
+          Err(err) => Err(err)
+        }
+      } else {
+        match save_dict(dict.clone(), &cached_dict) {
+          Ok(_) => {
+            match generate_quote(&dict, args.quote_length) {
+              Ok(quote) => Ok(quote),
+              Err(err) => Err(err)
+            }
+          },
+          Err(err) => Err(err)
+        }
       }
     }
   }
@@ -479,38 +532,48 @@ pub mod builder {
           return false;
         }
     });
-    let random = rand::thread_rng().gen_range(0, starts.clone().count());
-    let first = match starts.nth(random) {
-      Some(entry) => entry.clone(),
-      None => return Err(String::from("couldn't determine the quote starting point"))
-    };
-    let branch = build_branch(&dict, first, quote_length);
-    let mut quote = match branch.build() {
-      Some(vec_quote) => vec_quote.join(" "),
-      None => return Err(String::from("couldn't build a random quote"))
-    };
-    let ends_with_reg = Regex::new(r".+[\.,!,\?]$").unwrap();
-    if !ends_with_reg.is_match(&quote) {
-      quote.push('.');
+    let count = starts.clone().count();
+    if count > 0 {
+      let random = rand::thread_rng().gen_range(0, starts.clone().count());
+      let first = match starts.nth(random) {
+        Some(entry) => entry.clone(),
+        None => return Err(String::from("couldn't determine the quote starting point"))
+      };
+      let branch = build_branch(&dict, first, quote_length);
+      let mut quote = match branch.to_vec() {
+        Some(vec_quote) => vec_quote.join(" "),
+        None => return Err(String::from("couldn't build a random quote"))
+      };
+      let ends_with_reg = Regex::new(r".+[\.!\?]$").unwrap();
+      if !ends_with_reg.is_match(&quote) {
+        quote.push('.');
+      }
+      return Ok(quote)
+    } else {
+      return Err(String::from("couldn't determine quote starting point: at least 1 capitalized word followed by another world is needed"))
     }
-    Ok(quote)
   }
 
   fn build_branch(dict: &HashMap<String, Vec<String>>, unit: String, length: i32) -> Quote {
-    if length == 0 {
-      return Node(unit, Box::new(Nil));
+    if length == 1 {
+      Node(unit, Box::new(Nil))
     } else {
       match dict.get(&unit) {
         Some(entry) => {
-          let random = rand::thread_rng().gen_range(0, entry.iter().count());
-          match entry.iter().nth(random) {
-            Some(next) => {
-              return Node(unit, Box::new(build_branch(dict, next.clone(), length - 1)))
-            },
-            None => return Node(unit, Box::new(Nil))
-          };
+          let count = entry.iter().count();
+          if count > 0 {
+            let next_index = rand::thread_rng().gen_range(0, entry.iter().count());
+            match entry.iter().nth(next_index) {
+              Some(next) => {
+                return Node(unit, Box::new(build_branch(dict, next.clone(), length - 1)))
+              },
+              None => return Node(unit, Box::new(Nil))
+            };
+          } else {
+            Node(unit, Box::new(Nil))
+          }
         },
-        None => return Node(unit, Box::new(Nil))
+        None => Node(unit, Box::new(Nil))
       }
     }
   }
